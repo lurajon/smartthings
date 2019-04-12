@@ -10,8 +10,11 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- * V0.0.1 01.04.2019
+ * V0.0.2 12.04.2019
  *
+ *  - fixed issue with syncing
+ *  - added binary switch status
+ *  - setting association group in configure
  *
 */
 
@@ -106,16 +109,26 @@ metadata {
             state "energy", label:'${currentValue}\n kWh', action:"refresh"
         }
 
-		standardTile("refresh", "device.thermostatMode", width:6, height:2, inactiveLabel: false, decoration: "flat") {
+		standardTile("refresh", "device.thermostatMode", width:2, height:2, inactiveLabel: false, decoration: "flat") {
             state "default", action:"polling.poll", icon:"st.secondary.refresh"
 		}
+
+        standardTile("syncPending", "syncPending", decoration: "flat", width: 2, height: 2) {
+            state "default", label:'Sync Pending', backgroundColor:"#FF6600", icon: "https://raw.githubusercontent.com/codersaur/SmartThings/master/icons/tile_2x2_cycle.png"
+            state "0", label:'Synced', backgroundColor:"#79b821", icon: "https://raw.githubusercontent.com/codersaur/SmartThings/master/icons/tile_2x2_tick.png"
+        }
+
+         valueTile("heating", "heating", decoration: "flat", width: 2, height: 2) {
+            state "default", label:'Idle', icon: "https://github.com/lurajon/smartthings/raw/master/heatit-z-trm2fx/state-green.png"
+            state "255", label:'Heating', icon: "https://github.com/lurajon/smartthings/raw/master/heatit-z-trm2fx/state-red.png"
+        }
 
         main "thermostatMulti"
         details(["thermostatMulti", "mode",
         "heatingSetPointUp", "power-icon","ecoHeatingSetpointUp",
         "heatingSetpoint", "power", "ecoHeatingSetpoint",
         "heatingSetPointDown", "energy", "ecoHeatingSetpointDown",
-        "refresh"
+        "refresh", "syncPending", "heating"
         ])
 	}
 
@@ -144,7 +157,9 @@ metadata {
  }
 }
 
-
+def zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
+    logger("zwaveEvent(): Switch Binary Report received: ${cmd}","info")
+}
 
 def zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelEndPointReport cmd) {
     log.debug "multichannelv3.MultiChannelCapabilityReport: ${cmd}"
@@ -203,8 +218,27 @@ def zwaveEvent(physicalgraph.zwave.commands.meterv3.MeterReport cmd)
 
 def zwaveEvent(physicalgraph.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd)
 {
-    log.debug("Temperature is: $cmd.scaledSensorValue °C")
-    sendEvent(name: "temperature", value: cmd.scaledSensorValue)
+	def map = [ sensorType: cmd.sensorType, scale: cmd.scale, value: cmd.scaledSensorValue.toString() ]
+
+    switch (cmd.sensorType) {
+        case 1:  // Air Temperature (V1)
+            map.name = "temperature"
+            map.unit = (cmd.scale == 1) ? "F" : "C"
+            break
+        default:
+            logger("zwaveEvent(): SensorMultilevelReport with unhandled sensorType: ${cmd}","warn")
+            map.name = "unknown"
+            map.unit = "unknown"
+            break
+    }
+
+	logger("New multilevel sensor report: Name: ${map.name}, Value: ${map.value}, Unit: ${map.unit}","info")
+	if (cmd.sensorValue[1] > 0) {
+    	// Only send event where the sensor has a value - need to improve this, maybe sort?
+    	log.debug("Temperature is: $cmd.scaledSensorValue °C")
+    	sendEvent(name: "temperature", value: cmd.scaledSensorValue)
+    }
+
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.thermostatoperatingstatev2.ThermostatOperatingStateReport cmd)
@@ -278,12 +312,73 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeSuppo
 
 def zwaveEvent(physicalgraph.zwave.commands.multiinstanceassociationv1.MultiInstanceAssociationReport cmd)
 {
-    logging("${device.displayName} MultiInstanceAssociationReport - ${cmd}","info")
+
+        logging("${device.displayName} MultiInstanceAssociationReport - ${cmd}","info")
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.multichannelassociationv2.MultiChannelAssociationReport cmd)
 {
-    log.debug ("${device.displayName} MultiChannelAssociationReport - ${cmd}")//,"info")
+    logging ("${device.displayName} MultiChannelAssociationReport - ${cmd}","debug")
+
+     def result = []
+        if (cmd.nodeId.any { it == zwaveHubNodeId }) {
+        	logging ( "$device.displayName is associated in group ${cmd.groupingIdentifier}", "debug")
+                result << createEvent(descriptionText: "$device.displayName is associated in group ${cmd.groupingIdentifier}")
+        } else if (cmd.groupingIdentifier == 1) {
+                // We're not associated properly to group 1, set association
+                logging ( "Associating $device.displayName in group ${cmd.groupingIdentifier}", "debug")
+                result << createEvent(descriptionText: "Associating $device.displayName in group ${cmd.groupingIdentifier}")
+                result << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:cmd.groupingIdentifier, nodeId:zwaveHubNodeId))
+        } else if (cmd.groupingIdentifier == 2) {
+                // We're not associated properly to group 1, set association
+                logging ( "Associating $device.displayName in group ${cmd.groupingIdentifier}", "debug")
+                result << createEvent(descriptionText: "Associating $device.displayName in group ${cmd.groupingIdentifier}")
+                result << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:cmd.groupingIdentifier, nodeId:zwaveHubNodeId))
+        }
+result
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCapabilityReport cmd) {
+	def result = []
+	def cmds = []
+	if(!state.endpointInfo) state.endpointInfo = []
+	state.endpointInfo[cmd.endPoint - 1] = cmd.format()[6..-1]
+	if (cmd.endPoint < getDataValue("endpoints").toInteger()) {
+		cmds = zwave.multiChannelV3.multiChannelCapabilityGet(endPoint: cmd.endPoint + 1).format()
+	} else {
+		log.debug "endpointInfo: ${state.endpointInfo.inspect()}"
+	}
+	result << createEvent(name: "epInfo", value: util.toJson(state.endpointInfo), displayed: false, descriptionText:"")
+	if(cmds) result << response(cmds)
+	result
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsReport cmd) {
+	state.groups = cmd.supportedGroupings
+	if (cmd.supportedGroupings > 1) {
+		[response(zwave.associationGrpInfoV1.associationGroupInfoGet(groupingIdentifier:2, listMode:1))]
+	}
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.associationgrpinfov1.AssociationGroupInfoReport cmd) {
+	def cmds = []
+	/*for (def i = 0; i < cmd.groupCount; i++) {
+		def prof = cmd.payload[5 + (i * 7)]
+		def num = cmd.payload[3 + (i * 7)]
+		if (prof == 0x20 || prof == 0x31 || prof == 0x71) {
+			updateDataValue("agi$num", String.format("%02X%02X", *(cmd.payload[(7*i+5)..(7*i+6)])))
+			cmds << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:num, nodeId:zwaveHubNodeId))
+		}
+	}*/
+	for (def i = 2; i <= state.groups; i++) {
+		cmds << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:i, nodeId:zwaveHubNodeId))
+	}
+	cmds
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinarySet cmd) {
+    logger("zwaveEvent(): Switch Binary Set received: ${cmd}","info")
+    sendEvent(name: "heating", value: cmd.switchValue, displayed: false)
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
@@ -415,7 +510,83 @@ def poll() {
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 21)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 22)
 
+    logger("scanSensor(): Scanning sensorMultilevel sensorTypes:","info")
+        // These are relatively new and not widely supported:
+        cmds << zwave.sensorMultilevelV5.sensorMultilevelSupportedGetSensor()
+        cmds << zwave.sensorMultilevelV5.sensorMultilevelSupportedGetScale()
+        // So we brute-force scan:
+        (0..31).each { sT -> // Scan SensorTypes 0-31 (i.e. all up to V5).
+            //(0..3).each { s -> // Scan scales 0-3
+                cmds << zwave.sensorMultilevelV5.sensorMultilevelGet(sensorType: sT)
+            //}
+        }
+
+        def groupingIds = [1,2,3,4]
+
+    (1..4).each() {
+    //	cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId:[zwaveHubNodeId])
+    //    cmds << zwave.associationV2.associationSet(groupingIdentifier: it, nodeId: [zwaveHubNodeId])
+    	//logger("poll(): Syncing Association Group #${it} using Multi-Channel Association commands. New Destinations: ${toHexString([zwaveHubNodeId])}","info")
+     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: it, nodeId: []) // Remove All
+     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId: [zwaveHubNodeId])
+     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+    	}
+
     encapSequence(cmds, 650)
+}
+
+def configured() {
+
+    logging("${device.displayName} - Executing configured()","info")
+   /* def nodeId = "8E010100" + String.format("%02X",zwaveHubNodeId) + "01"
+
+    (1..4).each() {
+    //	cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId:[zwaveHubNodeId])
+    //    cmds << zwave.associationV2.associationSet(groupingIdentifier: it, nodeId: [zwaveHubNodeId])
+    	logger("updated(): Syncing Association Group #${it} using Multi-Channel Association commands. New Destinations: ${toHexString([zwaveHubNodeId])}","info")
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: it, nodeId: []) // Remove All
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId: [nodeId])
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+   	}*/
+
+    delayBetween([
+                // Can use the zwaveHubNodeId variable to add the hub to the
+                // device's associations:
+                zwave.associationV1.associationSet(groupingIdentifier:2, nodeId:zwaveHubNodeId).format(),
+
+        ])
+}
+
+def updated() {
+	log.debug "Update ${device.displayName} - nodeId: $zwaveHubNodeId"
+    if ( state.lastUpdated && (now() - state.lastUpdated) < 500 ) return
+    logging("${device.displayName} - Executing updated()","info")
+
+    runIn(3,"syncStart")
+    state.lastUpdated = now()
+
+}
+
+def installed() {
+	// Configure device
+
+	def cmds = []
+
+   /* def groupingIds = [1,2,3,4]
+
+    groupingIds.each() {
+    logger("installed(): Installing Association Group #${it} using Multi-Channel Association commands. New Destinations: ${toHexString([])}","info")
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: it, nodeId: []) // Remove All
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId: [])
+        cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+   	}*/
+
+   	cmds <<	new physicalgraph.device.HubAction(zwave.manufacturerSpecificV2.manufacturerSpecificGet().format())
+	sendHubCommand(cmds)
+	runIn(3, "initialize", [overwrite: true])  // Allow configure command to be sent and acknowledged before proceeding
 }
 
 def configure()
@@ -425,6 +596,16 @@ def configure()
 
 def modes() {
 	["off", "heat", "energySaveHeat"]
+}
+
+/**
+ *  sendCommands(cmds, delay=200)
+ *
+ *  Sends a list of commands directly to the device using sendHubCommand.
+ *  Uses encapCommand() to apply security or CRC16 encapsulation as needed.
+ **/
+private sendCommands(cmds, delay=200) {
+    sendHubCommand( cmds.collect{ (it instanceof physicalgraph.zwave.Command ) ? response(encapCommand(it)) : response(it) }, delay)
 }
 
 
@@ -585,6 +766,7 @@ private syncStart() {
     if ( syncNeeded ) {
         logging("${device.displayName} - starting sync.", "info")
         multiStatusEvent("Sync in progress.", true, true)
+        sendEvent(name: "syncPending", value: 1, displayed: false)
         syncNext()
     }
 }
@@ -600,9 +782,9 @@ private syncNext() {
             cmds << response(encap(zwave.configurationV2.configurationSet(configurationValue: intToParam(state."$param.key".value, param.size, param.scale), parameterNumber: param.num, size: param.size)))
             cmds << response(encap(zwave.configurationV2.configurationGet(parameterNumber: param.num)))
 
-            if (param.num == 2)
+           /* if (param.num == 2)
             {
-    			      cmds << response(encap(zwave.associationV2.associationRemove(groupingIdentifier:3, nodeId:[zwaveHubNodeId])))
+    			cmds << response(encap(zwave.associationV2.associationRemove(groupingIdentifier:3, nodeId:[zwaveHubNodeId])))
                 cmds << response(encap(zwave.associationV2.associationRemove(groupingIdentifier:4, nodeId:[zwaveHubNodeId])))
                 cmds << response(encap(zwave.associationV2.associationRemove(groupingIdentifier:5, nodeId:[zwaveHubNodeId])))
                 cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: 3, nodeId:[zwaveHubNodeId])
@@ -610,24 +792,26 @@ private syncNext() {
                 cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: 5, nodeId:[zwaveHubNodeId])
 
                 def sensor = 1 as long // build in sensor
-                if (state."$param.key".value == 0 || state."$param.key".value == 5)
+                if (state."$param.key".value == 0)
                 {
-                	sensor = 3 // floor sensor
+                	sensor = 2 // floor sensor
                 }
-                else if (state."$param.key".value == 3)
+                else if (state."$param.key".value == 3 || state."$param.key".value == 4)
                 {
-                	sensor = 2 // external sensor
+                	sensor = 3 // external sensor
                 }
                 cmds << response(encap(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: sensor, nodeId:[zwaveHubNodeId])))
                 cmds << response(encap(zwave.associationV2.associationSet(groupingIdentifier: sensor, nodeId:[zwaveHubNodeId])))
 
             }
+            */
+
+
             break
         }
     }
     if (cmds) {
         runIn(10, "syncCheck")
-        log.debug "cmds!"
         sendHubCommand(cmds,1000)
     } else {
         runIn(1, "syncCheck")
@@ -650,7 +834,6 @@ private syncCheck() {
         }
     }
 
-    log.debug("incorrects: $incorrect")
     if (failed) {
         logging("${device.displayName} - Sync failed! Check parameter: ${failed[0].num}","info")
         sendEvent(name: "syncStatus", value: "failed")
@@ -666,6 +849,7 @@ private syncCheck() {
     } else {
         logging("${device.displayName} - Sync Complete","info")
         sendEvent(name: "syncStatus", value: "synced")
+        sendEvent(name: "syncPending", value: 0, displayed: false)
         multiStatusEvent("Sync OK.", true, true)
     }
 }
@@ -679,18 +863,23 @@ private multiStatusEvent(String statusValue, boolean force = false, boolean disp
 def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
 
     def paramKey = parameterMap().find( {it.num == cmd.parameterNumber } ).key
-    log.debug("paramKey: $paramKey")
     def value = state."$paramKey".value as long
-	  log.debug("Value: $value")
-    def scale = 1 as long
+	 def scale = 1 as long
     if (state."$paramKey".scale)
     {
     	scale = state."$paramKey".scale
     }
-    log.debug("scale: $scale")
+
     def scaledValue = value * scale as long
-    logging("${device.displayName} - Parameter ${paramKey} value is ${cmd.scaledConfigurationValue.toLong()} expected " + scaledValue + ":" + (scaledValue == cmd.scaledConfigurationValue.toLong()) , "info")
-    state."$paramKey".state = (scaledValue == cmd.scaledConfigurationValue.toLong()) ? "synced" : "synced"
+
+    if (scaledValue == cmd.scaledConfigurationValue.toLong()) {
+    	state."$paramKey".state = "synced"
+    } else {
+    	state."$paramKey".state = "incorrect"
+
+        // just to help identify the expected value
+        logging("${device.displayName} - Parameter ${paramKey} value is ${cmd.scaledConfigurationValue.toLong()} expected " + scaledValue + ":" + (scaledValue == cmd.scaledConfigurationValue.toLong()) , "debug")
+    }
     syncNext()
 }
 
@@ -723,10 +912,58 @@ def zwaveEvent(physicalgraph.zwave.commands.crc16encapv1.Crc16Encap cmd) {
     }
 }
 
+/**
+ *  toHexString()
+ *
+ *  Convert a list of integers to a list of hex strings.
+ **/
+private toHexString(input, size = 2, usePrefix = false) {
+
+    def pattern = (usePrefix) ? "0x%0${size}X" : "%0${size}X"
+
+    if (input instanceof Collection) {
+        def hex  = []
+        input.each { hex.add(String.format(pattern, it)) }
+        return hex.toString()
+    }
+    else {
+        return String.format(pattern, input)
+    }
+}
+
 
 private logging(text, type = "debug") {
     if (settings.logging == "true") {
         log."$type" text
+    }
+}
+
+private logger(msg, level = "debug") {
+
+    switch(level) {
+        case "error":
+            if (state.loggingLevelIDE >= 1) log.error msg
+            break
+
+        case "warn":
+            if (state.loggingLevelIDE >= 2) log.warn msg
+            break
+
+        case "info":
+            if (state.loggingLevelIDE >= 3) log.info msg
+            break
+
+        case "debug":
+            if (state.loggingLevelIDE >= 4) log.debug msg
+            break
+
+        case "trace":
+            if (state.loggingLevelIDE >= 5) log.trace msg
+            break
+
+        default:
+            log.debug msg
+            break
     }
 }
 
@@ -812,15 +1049,7 @@ private Map cmdVersions() {
     [0x85: 2, 0x59: 1, 0x8E: 2, 0x86: 3, 0x70: 2, 0x72: 2, 0x5E: 2, 0x5A: 1, 0x73: 1, 0x7A: 4, 0x60: 3, 0x20: 1, 0x6C: 1, 0x31: 5, 0x43: 2, 0x40: 2, 0x98: 1, 0x9F: 1, 0x25: 1]
 }
 
-def initialize() {
-	// Device-Watch simply pings if no device events received for 32min(checkInterval)
-	sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID])
-	unschedule()
-	if (getDataValue("manufacturer") != "Honeywell") {
-		runEvery5Minutes("poll")  // This is not necessary for Honeywell Z-wave, but could be for other Z-wave thermostats
-	}
-	pollDevice()
-}
+
 
 private parameterMap() {[
     [key: "sensorMode", num: 2, size: 1, type: "enum", options: [
@@ -842,35 +1071,37 @@ private parameterMap() {[
     [key: "TemperatureControlCysteresis", num: 4, size: 1, type: "number", def:5, min: 3, max: 30, title: "Hysteresis temp (0.3°..3°) - 3-30",
      descr: "This parameter determines the control hysteresis", scale: 1],
 
-    [key: "FLo", num: 5, size: 1, type: "number", def:50, min: 50, max: 400, title: "Minimum floor temperature(5°..40°)",
-     descr: "Minimum floor temperature", scale: 1],
+    [key: "FLo", num: 5, size: 1, type: "number", def:5, min: 5, max: 40, title: "Minimum floor temperature(5°..40°)",
+     descr: "Minimum floor temperature", scale: 10],
 
-    [key: "FHi", num: 6, size: 1, type: "number", def:280, min: 50, max: 400, title: "Maxmum floor temperature (5°..40°)",
-     descr: "Maxmum floor temperature", scale: 1],
+    [key: "FHi", num: 6, size: 1, type: "number", def:28, min: 5, max: 40, title: "Maxmum floor temperature (5°..40°)",
+     descr: "Maxmum floor temperature", scale: 10],
 
-    [key: "ALo", num: 7, size: 1, type: "number", def:50, min: 50, max: 400, title: "Minimum air temperature (5°..40°)",
-     descr: "Minimum air temperature", scale: 1],
+    [key: "ALo", num: 7, size: 1, type: "number", def:5, min: 5, max: 40, title: "Minimum air temperature (5°..40°)",
+     descr: "Minimum air temperature", scale: 10],
 
-    [key: "AHi", num: 8, size: 1, type: "number", def:400, min: 50, max: 400, title: "Maxmum air temperature (5°..40°)",
-     descr: "Maxmum air temperature", scale: 1],
+    [key: "AHi", num: 8, size: 1, type: "number", def:40, min: 5, max: 40, title: "Maxmum air temperature (5°..40°)",
+     descr: "Maxmum air temperature", scale: 10],
 
-    [key: "CO", num: 9, size: 1, type: "number", def:210, min: 50, max: 400, title: "Heating mode setpoint (CO)",
-     descr: "5.0°C – 40.0°C. Default is 210 (21.0°C)", scale: 1],
+  /*  [key: "CO", num: 9, size: 1, type: "number", def:21, min: 5, max: 40, title: "Heating mode setpoint (CO)",
+     descr: "5.0°C – 40.0°C. Default is 210 (21.0°C)", scale: 10],
+
+     */
 
   /* Set by setEcoHeatingSetpoint -- not required in configure
-    [key: "ECO", num: 10, size: 1, type: "number", def:180, min: 50, max: 400, title: "Energy saving mode setpoint (ECO)",
-     descr: "5.0°C – 40.0°C. Default is 180 (18.0°C)", scale: 1],
+    [key: "ECO", num: 10, size: 1, type: "number", def:18, min: 5, max: 40, title: "Energy saving mode setpoint (ECO)",
+     descr: "5.0°C – 40.0°C. Default is 180 (18.0°C)", scale: 10],
 
     */
 
-	  [key: "COOL", num: 11, size: 1, type: "number", def:210, min: 50, max: 400, title: "Cooling temperature (5°..40°)",
-     descr: "Cooling temperature", scale: 1],
+	  [key: "COOL", num: 11, size: 1, type: "number", def:21, min: 5, max: 40, title: "Cooling temperature (5°..40°)",
+     descr: "Cooling temperature", scale: 10],
 
-    [key: "FloorSensorCalibration", num: 12, size: 1, type: "number", def:0, min: -40, max: 40, title: "Floor sensor calibration (-4°..4°)",
-     descr: "Floor sensor calibration in deg. C (x10)", scale: 1],
+    [key: "FloorSensorCalibration", num: 12, size: 1, type: "number", def:0, min: -4, max: 4, title: "Floor sensor calibration (-4°..4°)",
+     descr: "Floor sensor calibration in deg. C (x10)", scale: 10],
 
- 	  [key: "ExtSensorCalibration", num: 13, size: 1, type: "number", def:0, min: -40, max: 40, title: "External sensor calibration (-4°..4°)",
-     descr: "External sensor calibration in deg. C (x10)", scale: 1],
+ 	  [key: "ExtSensorCalibration", num: 13, size: 1, type: "number", def:0, min: -4, max: 4, title: "External sensor calibration (-4°..4°)",
+     descr: "External sensor calibration in deg. C (x10)", scale: 10],
 
     [key: "tempDisplay", num: 14, size: 1, type: "enum", options: [
     	0: "Display setpoint temperature (Default)",
@@ -893,7 +1124,7 @@ private parameterMap() {[
     [key: "TmpReportIntvl", num: 19, size: 2, type: "number", def:60, min: 0, max: 32767, title: "Temperature report interval (seconds)",
      descr: "Time interval between consecutive temperature reports. Temperature reports can be also sent as a result of polling", scale: 1],
 
-    [key: "TempReportHyst", num: 20, size: 1, type: "number", def:1.0, min: 0.1, max: 10.0, title: "Temperature report hysteresis (0.1°..10°)",
+    [key: "TempReportHyst", num: 20, size: 1, type: "number", def:10, min: 01, max: 100, title: "Temperature report hysteresis (0.1°..10°)",
      descr: "The temperature report will be sent if there is a difference in temperature value from the previous value reported, defined in this parameter (hysteresis). Temperature reports can be also sent as a result of polling", scale: 10],
 
     [key: "MeterReportInterval", num: 21, size: 2, type: "number", def:60, min: 0, max: 32767, title: "Meter report interval (seconds)",
