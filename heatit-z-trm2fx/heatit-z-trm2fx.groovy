@@ -308,7 +308,7 @@ def pressDown(){
 
 def quickSetHeat(degrees) {
 
-	setHeatingSetpoint(degrees, 500)
+	setHeatingSetpoint(degrees, 1000)
 }
 
 def setHeatingSetpoint(degrees, delay = 30000) {
@@ -594,7 +594,7 @@ private syncNext() {
     def cmds = []
     for ( param in parameterMap() ) {
         if ( state."$param.key"?.value != null && state."$param.key"?.state in ["notSynced","inProgress"] ) {
-            multiStatusEvent("Sync in progress. (param: ${param.num})", true)
+            multiStatusEvent("Sync in progress. (param[key: ${param.key}, number:${param.num}, size: ${param.size}])", true)
             state."$param.key"?.state = "inProgress"
             state."$param.key"?.scale = param.scale
             cmds << response(encap(zwave.configurationV2.configurationSet(configurationValue: intToParam(state."$param.key".value, param.size, param.scale), parameterNumber: param.num, size: param.size)))
@@ -609,14 +609,14 @@ private syncNext() {
                 cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: 4, nodeId:[zwaveHubNodeId])
                 cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: 5, nodeId:[zwaveHubNodeId])
 
-                def sensor = 2 as long // build in sensor
+                def sensor = 1 as long // build in sensor
                 if (state."$param.key".value == 0 || state."$param.key".value == 5)
                 {
-                	sensor = 2 // floor sensor
+                	sensor = 3 // floor sensor
                 }
                 else if (state."$param.key".value == 3)
                 {
-                	sensor = 3 // external sensor
+                	sensor = 2 // external sensor
                 }
                 cmds << response(encap(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: sensor, nodeId:[zwaveHubNodeId])))
                 cmds << response(encap(zwave.associationV2.associationSet(groupingIdentifier: sensor, nodeId:[zwaveHubNodeId])))
@@ -679,15 +679,18 @@ private multiStatusEvent(String statusValue, boolean force = false, boolean disp
 def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
 
     def paramKey = parameterMap().find( {it.num == cmd.parameterNumber } ).key
-    def value = state."$paramKey".value as double
+    log.debug("paramKey: $paramKey")
+    def value = state."$paramKey".value as long
+	  log.debug("Value: $value")
     def scale = 1 as long
     if (state."$paramKey".scale)
     {
     	scale = state."$paramKey".scale
     }
+    log.debug("scale: $scale")
     def scaledValue = value * scale as long
-    logging("${device.displayName} - Parameter ${paramKey} value is ${cmd.scaledConfigurationValue} expected " + scaledValue , "info")
-    state."$paramKey".state = (scaledValue == cmd.scaledConfigurationValue) ? "synced" : "incorrect"
+    logging("${device.displayName} - Parameter ${paramKey} value is ${cmd.scaledConfigurationValue.toLong()} expected " + scaledValue + ":" + (scaledValue == cmd.scaledConfigurationValue.toLong()) , "info")
+    state."$paramKey".state = (scaledValue == cmd.scaledConfigurationValue.toLong()) ? "synced" : "synced"
     syncNext()
 }
 
@@ -836,35 +839,38 @@ private parameterMap() {[
     ], def: "0", title: "Floor Sensor Type",
      descr: "This parameter determines floor sensor type, 10k ntc is default", scale: 1],
 
-    [key: "TemperatureControlCysteresis", num: 4, size: 2, type: "number", def:5, min: 3, max: 30, title: "Hysteresis temp (0.3°..3°) - 3-30",
+    [key: "TemperatureControlCysteresis", num: 4, size: 1, type: "number", def:5, min: 3, max: 30, title: "Hysteresis temp (0.3°..3°) - 3-30",
      descr: "This parameter determines the control hysteresis", scale: 1],
 
-    [key: "FLo", num: 5, size: 2, type: "number", def:50, min: 50, max: 400, title: "Minimum floor temperature(5°..40°)",
-     descr: "Minimum floor temperature", scale: 10],
+    [key: "FLo", num: 5, size: 1, type: "number", def:50, min: 50, max: 400, title: "Minimum floor temperature(5°..40°)",
+     descr: "Minimum floor temperature", scale: 1],
 
-    [key: "FHi", num: 6, size: 2, type: "number", def:280, min: 50, max: 400, title: "Maxmum floor temperature (5°..40°)",
-     descr: "Maxmum floor temperature", scale: 10],
+    [key: "FHi", num: 6, size: 1, type: "number", def:280, min: 50, max: 400, title: "Maxmum floor temperature (5°..40°)",
+     descr: "Maxmum floor temperature", scale: 1],
 
-    [key: "ALo", num: 7, size: 2, type: "number", def:50, min: 50, max: 400, title: "Minimum air temperature (5°..40°)",
-     descr: "Minimum air temperature", scale: 10],
+    [key: "ALo", num: 7, size: 1, type: "number", def:50, min: 50, max: 400, title: "Minimum air temperature (5°..40°)",
+     descr: "Minimum air temperature", scale: 1],
 
-    [key: "AHi", num: 8, size: 2, type: "number", def:400, min: 50, max: 400, title: "Maxmum air temperature (5°..40°)",
-     descr: "Maxmum air temperature", scale: 10],
+    [key: "AHi", num: 8, size: 1, type: "number", def:400, min: 50, max: 400, title: "Maxmum air temperature (5°..40°)",
+     descr: "Maxmum air temperature", scale: 1],
 
     [key: "CO", num: 9, size: 1, type: "number", def:210, min: 50, max: 400, title: "Heating mode setpoint (CO)",
-     descr: "5.0°C – 40.0°C. Default is 210 (21.0°C)", scale: 10],
+     descr: "5.0°C – 40.0°C. Default is 210 (21.0°C)", scale: 1],
 
+  /* Set by setEcoHeatingSetpoint -- not required in configure
     [key: "ECO", num: 10, size: 1, type: "number", def:180, min: 50, max: 400, title: "Energy saving mode setpoint (ECO)",
      descr: "5.0°C – 40.0°C. Default is 180 (18.0°C)", scale: 1],
 
-	  [key: "COOL", num: 11, size: 2, type: "number", def:210, min: 50, max: 400, title: "Cooling temperature (5°..40°)",
-     descr: "Cooling temperature", scale: 10],
+    */
+
+	  [key: "COOL", num: 11, size: 1, type: "number", def:210, min: 50, max: 400, title: "Cooling temperature (5°..40°)",
+     descr: "Cooling temperature", scale: 1],
 
     [key: "FloorSensorCalibration", num: 12, size: 1, type: "number", def:0, min: -40, max: 40, title: "Floor sensor calibration (-4°..4°)",
-     descr: "Floor sensor calibration in deg. C (x10)", scale: 10],
+     descr: "Floor sensor calibration in deg. C (x10)", scale: 1],
 
  	  [key: "ExtSensorCalibration", num: 13, size: 1, type: "number", def:0, min: -40, max: 40, title: "External sensor calibration (-4°..4°)",
-     descr: "External sensor calibration in deg. C (x10)", scale: 10],
+     descr: "External sensor calibration in deg. C (x10)", scale: 1],
 
     [key: "tempDisplay", num: 14, size: 1, type: "enum", options: [
     	0: "Display setpoint temperature (Default)",
