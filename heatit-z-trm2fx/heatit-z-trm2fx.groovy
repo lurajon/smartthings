@@ -16,10 +16,16 @@
  *  - added binary switch status
  *  - setting association group in configure
  *
+ * V0.0.3 25.04.2019
+ *
+ *  - Set operating mode
+ *  - Set thermostat operating state (idle,heating)
+ *  - Changed colors to the recommended colors from the API
+ *  - Fixed issue with setting eco heating set point
 */
 
 metadata {
-	definition (name: "heatit Z-Trm2fx", namespace: "heatit", author: "JoneLura") {
+	definition (name: "heatit Z-Trm2fx", namespace: "JoneLura", author: "JoneLura") {
 		capability "Actuator"
 		capability "Temperature Measurement"
 		capability "Thermostat"
@@ -54,23 +60,25 @@ metadata {
             {
                 attributeState("default", label:'${currentValue}°', unit:"C", action:"switchMode", icon:"st.Home.home1")
             }
-            tileAttribute("device.thermostatOperatingState", key: "OPERATING_STATE")
+
+            tileAttribute("device.thermostatMode", key: "OPERATING_STATE")
             {
-                attributeState("idle", backgroundColor:"#44b621")
-                attributeState("heating", backgroundColor:"#bc2323")
-                attributeState("energySaveHeat", backgroundColor:"#ffa81e")
+                attributeState("off",  action:"switchMode", nextState:"heat")
+                attributeState("heat",  action:"switchMode", nextState:"energy", backgroundColor: "#e86d13")
+                attributeState("energySaveHeat", action:"switchMode", nextState:"off", backgroundColor: "#79b821")
             }
-            tileAttribute("device.thermostatMode", key: "THERMOSTAT_MODE")
-            {
-                attributeState("off", label:'${name}', action:"switchMode", nextState:"heat")
-                attributeState("heat", label:'${name}', action:"switchMode", nextState:"energy")
-                attributeState("energySaveHeat", label:'${name}', action:"switchMode", nextState:"off")
-            }
+
+            tileAttribute("device.heatingSetpoint", key: "HEATING_SETPOINT") {
+        		attributeState("heatingSetpoint", label:'${currentValue}', defaultState: true)
+    		}
+    		tileAttribute("device.coolingSetpoint", key: "COOLING_SETPOINT") {
+        		attributeState("coolingSetpoint", label:'${currentValue}', defaultState: true)
+    		}
 
         }
 
-        valueTile("heatingSetpoint", "device.heatingSetpoint", decoration: "flat", width: 2, height: 2, key: "HEATING_SETPOINT") {
-        	state("default", label:'${currentValue}') //, backgroundColor: "#bc2323")
+        valueTile("heatingSetpoint", "device.heatingSetpoint", decoration: "flat", width: 2, height: 2) {
+        	state("default", label:'${currentValue}')
         }
 
         standardTile("heatingSetpointLabel", "device.heatingSetpoint.label", decoration: "flat", width: 2, height: 1) {
@@ -102,14 +110,14 @@ metadata {
         }
 
         standardTile("power-icon", "power.icon", decoration: "flat", width: 2, height: 2) {
-    		state "default",  icon:"st.switches.switch.off"
+    		state "default", label: 'Power',  icon:"st.switches.switch.off"
         }
 
         valueTile("energy", "device.energy", decoration: "flat", width: 2, height: 2) {
             state "energy", label:'${currentValue}\n kWh', action:"refresh"
         }
 
-		standardTile("refresh", "device.thermostatMode", width:2, height:2, inactiveLabel: false, decoration: "flat") {
+		standardTile("refresh", "refresh", width:2, height:2, inactiveLabel: false, decoration: "flat") {
             state "default", action:"polling.poll", icon:"st.secondary.refresh"
 		}
 
@@ -118,17 +126,17 @@ metadata {
             state "0", label:'Synced', backgroundColor:"#79b821", icon: "https://raw.githubusercontent.com/codersaur/SmartThings/master/icons/tile_2x2_tick.png"
         }
 
-         valueTile("heating", "heating", decoration: "flat", width: 2, height: 2) {
-            state "default", label:'Idle', icon: "https://github.com/lurajon/smartthings/raw/master/heatit-z-trm2fx/state-green.png"
-            state "255", label:'Heating', icon: "https://github.com/lurajon/smartthings/raw/master/heatit-z-trm2fx/state-red.png"
+        standardTile("state", "device.thermostatOperatingState", height: 2, width: 2) {
+                state("idle", label: "Idle", backgroundColor:"#00A0DC")
+                state("heating", label: 'Heating', backgroundColor:"#e86d13")
         }
 
-        main "thermostatMulti"
+        main (["thermostatMulti"])
         details(["thermostatMulti", "mode",
         "heatingSetPointUp", "power-icon","ecoHeatingSetpointUp",
         "heatingSetpoint", "power", "ecoHeatingSetpoint",
         "heatingSetPointDown", "energy", "ecoHeatingSetpointDown",
-        "refresh", "syncPending", "heating"
+        "refresh", "syncPending", "state"
         ])
 	}
 
@@ -209,6 +217,11 @@ def zwaveEvent(physicalgraph.zwave.commands.meterv3.MeterReport cmd)
             break
         case 2:
             sendEvent([name: "power", value: cmd.scaledMeterValue, unit: "W"])
+            state.thermostatOperatingState = "idle"
+            if (cmd.scaledMeterValue > 0.5) {
+            	state.thermostatOperatingState = "heating"
+            }
+            sendEvent([name: "thermostatOperatingState", value: state.thermostatOperatingState])
         //    log.debug "power $cmd.scaledMeterValue W"
             break
     }
@@ -248,20 +261,14 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatoperatingstatev2.Thermosta
 	switch (cmd.operatingState) {
 		case physicalgraph.zwave.commands.thermostatoperatingstatev1.ThermostatOperatingStateReport.OPERATING_STATE_IDLE:
 			map.value = "idle"
-			break
+            break
 		case physicalgraph.zwave.commands.thermostatoperatingstatev1.ThermostatOperatingStateReport.OPERATING_STATE_HEATING:
 			map.value = "heating"
 			break
-		case physicalgraph.zwave.commands.thermostatoperatingstatev1.ThermostatOperatingStateReport.OPERATING_STATE_PENDING_HEAT:
-			map.value = "pending heat"
-			break
-		case physicalgraph.zwave.commands.thermostatoperatingstatev1.ThermostatOperatingStateReport.OPERATING_STATE_PENDING_COOL:
-			map.value = "pending cool"
-			break
-		case physicalgraph.zwave.commands.thermostatoperatingstatev1.ThermostatOperatingStateReport.OPERATING_STATE_VENT_ECONOMIZER:
-			map.value = "vent economizer"
-			break
 	}
+
+    sendEvent(name: "thermostatOperatingState", value: map.value)
+
 	map.name = "thermostatOperatingState"
 	map
 }
@@ -273,11 +280,11 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeRepor
 	switch (cmd.mode) {
 		case physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeReport.MODE_OFF:
 			map.value = "off"
-            sendEvent(name: "thermostatOperatingState", value: "idle")
+            sendEvent(name: "thermostatMode", value: "off")
 			break
 		case physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeReport.MODE_HEAT:
 			map.value = "heat"
-            sendEvent(name: "thermostatOperatingState", value: "heating")
+            sendEvent(name: "thermostatMode", value: "heat")
 			break
 		case physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeReport.MODE_AUXILIARY_HEAT:
 			map.value = "emergency heat"
@@ -290,7 +297,7 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeRepor
 			break
         case physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeReport.MODE_ENERGY_SAVE_HEAT:
 			map.value = "energySaveHeat"
-            sendEvent(name: "thermostatOperatingState", value: "energySaveHeat")
+            sendEvent(name: "thermostatMode", value: "energySaveHeat")
 			break
 	}
 	map.name = "thermostatMode"
@@ -362,14 +369,7 @@ def zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationGroupingsRe
 
 def zwaveEvent(physicalgraph.zwave.commands.associationgrpinfov1.AssociationGroupInfoReport cmd) {
 	def cmds = []
-	/*for (def i = 0; i < cmd.groupCount; i++) {
-		def prof = cmd.payload[5 + (i * 7)]
-		def num = cmd.payload[3 + (i * 7)]
-		if (prof == 0x20 || prof == 0x31 || prof == 0x71) {
-			updateDataValue("agi$num", String.format("%02X%02X", *(cmd.payload[(7*i+5)..(7*i+6)])))
-			cmds << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:num, nodeId:zwaveHubNodeId))
-		}
-	}*/
+
 	for (def i = 2; i <= state.groups; i++) {
 		cmds << response(zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier:i, nodeId:zwaveHubNodeId))
 	}
@@ -378,7 +378,7 @@ def zwaveEvent(physicalgraph.zwave.commands.associationgrpinfov1.AssociationGrou
 
 def zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinarySet cmd) {
     logger("zwaveEvent(): Switch Binary Set received: ${cmd}","info")
-    sendEvent(name: "heating", value: cmd.switchValue, displayed: false)
+    sendEvent(name: "switch", value: cmd.switchValue, displayed: false)
 }
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd) {
@@ -403,7 +403,7 @@ def pressDown(){
 
 def quickSetHeat(degrees) {
 
-	setHeatingSetpoint(degrees, 1000)
+	setHeatingSetpoint(degrees, 100)
 }
 
 def setHeatingSetpoint(degrees, delay = 30000) {
@@ -433,7 +433,7 @@ def setHeatingSetpoint(Double degrees, Integer delay = 30000) {
 
 def ecoPressUp(){
 	log.debug("pressed Up")
-	def currTemp = device.latestValue("ecoHeatingSetpoint")
+	def currTemp = state.ecoheatingSetpoint
     log.debug(" pressed up currently $currTemp")
     def newTemp = currTemp + 0.5
     log.debug(" pressed up new temp is $newTemp")
@@ -442,14 +442,14 @@ def ecoPressUp(){
 
 def ecoPressDown(){
 	log.debug("pressed Down")
-	def currTemp = device.latestValue("ecoHeatingSetpoint")
+	def currTemp = state.ecoheatingSetpoint
     def newTemp = currTemp - 0.5
 	quickSetecoHeat(newTemp)
 }
 
 def quickSetecoHeat(degrees) {
 
-	setecoHeatingSetpoint(degrees, 1000)
+	setecoHeatingSetpoint(degrees, 100)
 }
 
 def setecoHeatingSetpoint(degrees, delay = 30000) {
@@ -476,6 +476,35 @@ def setecoHeatingSetpoint(Double degrees, Integer delay = 30000) {
     cmds << zwave.thermostatSetpointV1.thermostatSetpointSet(setpointType: 11, scale: deviceScale, precision: p, scaledValue: convertedDegrees)
     cmds << zwave.thermostatSetpointV1.thermostatSetpointGet(setpointType: 11)
     encapSequence(cmds, delay)
+
+}
+
+def setThermostatMode(String value) {
+	delayBetween([
+		zwave.thermostatModeV2.thermostatModeSet(mode: modeMap[value]).format(),
+		zwave.thermostatModeV2.thermostatModeGet().format()
+	])
+}
+
+def off() {
+	delayBetween([
+		zwave.thermostatModeV2.thermostatModeSet(mode: 0).format(),
+		zwave.thermostatModeV2.thermostatModeGet().format()
+	])
+}
+
+def heat() {
+	delayBetween([
+		zwave.thermostatModeV2.thermostatModeSet(mode: 1).format(),
+		zwave.thermostatModeV2.thermostatModeGet().format()
+	])
+}
+
+def energySaveHeat() {
+	delayBetween([
+		zwave.thermostatModeV2.thermostatModeSet(mode: 11).format(),
+		zwave.thermostatModeV2.thermostatModeGet().format()
+	])
 }
 
 
@@ -485,10 +514,10 @@ def poll() {
 	  cmds << zwave.thermostatSetpointV2.thermostatSetpointGet(setpointType: 1)
 	  cmds << zwave.thermostatSetpointV2.thermostatSetpointGet(setpointType: 2)
     cmds << zwave.thermostatModeV2.thermostatModeGet()
- //   cmds << zwave.multiChannelAssociationV2.MultiChannelAssociationGroupingsGet()
-
-//    cmds << zwave.configurationV2.configurationGet(parameterNumber: 1)
-	cmds << zwave.configurationV2.configurationGet(parameterNumber: 2)
+    cmds << zwave.thermostatOperatingStateV1.thermostatOperatingStateGet()
+    cmds << zwave.switchBinaryV1.switchBinaryGet()
+	cmds << zwave.configurationV2.configurationGet(parameterNumber: 1)
+    cmds << zwave.configurationV2.configurationGet(parameterNumber: 2)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 3)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 4)
     cmds << zwave.configurationV2.configurationGet(parameterNumber: 5)
@@ -523,15 +552,6 @@ def poll() {
 
         def groupingIds = [1,2,3,4]
 
-    (1..4).each() {
-    //	cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId:[zwaveHubNodeId])
-    //    cmds << zwave.associationV2.associationSet(groupingIdentifier: it, nodeId: [zwaveHubNodeId])
-    	//logger("poll(): Syncing Association Group #${it} using Multi-Channel Association commands. New Destinations: ${toHexString([zwaveHubNodeId])}","info")
-     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
-     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: it, nodeId: []) // Remove All
-     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationSet(groupingIdentifier: it, nodeId: [zwaveHubNodeId])
-     //   cmds << zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
-    	}
 
     encapSequence(cmds, 650)
 }
@@ -608,57 +628,38 @@ private sendCommands(cmds, delay=200) {
     sendHubCommand( cmds.collect{ (it instanceof physicalgraph.zwave.Command ) ? response(encapCommand(it)) : response(it) }, delay)
 }
 
+def updateState(String name, String value) {
+	state[name] = value
+	device.updateDataValue(name, value)
+}
 
 def switchMode() {
-
-    def currentMode = device.currentState("thermostatMode")?.value
-    if (!currentMode)
-    {
-    	currentMode = "off"
-    }
-    log.debug "currentMode $currentMode"
- 	def cmds = []
-   // log.debug("currentMode is $currentMode")
-    if (currentMode == "off"){
-    	def nextMode = "heat"
-        sendEvent(name: "thermostatMode", value: "heat")
-        sendEvent(name: "thermostatOperatingState", value: "heating")
-
-    	cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 1)
-    	cmds << zwave.thermostatModeV2.thermostatModeGet()
-    	encapSequence(cmds, 650)
-        poll()
-    }
-    else if (currentMode == "heat"){
-    	def nextMode = "energySaveHeat"
-        sendEvent(name: "thermostatMode", value: "energySaveHeat")
-        sendEvent(name: "thermostatOperatingState", value: "energySaveHeat")
-    	cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 11)
-    	cmds << zwave.thermostatModeV2.thermostatModeGet()
-    	encapSequence(cmds, 650)
-        poll()
-    }
-    else if (currentMode == "energySaveHeat"){
-    	def nextMode = "off"
-        sendEvent(name: "thermostatMode", value: "off")
-        sendEvent(name: "thermostatOperatingState", value: "idle")
-    	cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 11)
-    	cmds << zwave.thermostatModeV2.thermostatModeGet()
-    	encapSequence(cmds, 650)
-        poll()
-    }
+	def currentMode = device.currentState("thermostatMode")?.value
+	def lastTriedMode = getDataByName("lastTriedMode") ?: currentMode ?: "off"
+	def supportedModes = getDataByName("supportedModes")
+	def modeOrder = modes()
+	def next = { modeOrder[modeOrder.indexOf(it) + 1] ?: modeOrder[0] }
+	def nextMode = next(lastTriedMode)
+	if (supportedModes?.contains(currentMode)) {
+		while (!supportedModes.contains(nextMode) && nextMode != "off") {
+			nextMode = next(nextMode)
+		}
+	}
+    log.debug "Switching to mode: ${nextMode}"
+	switchToMode(nextMode)
 }
 
 def switchToMode(nextMode) {
 	def supportedModes = getDataByName("supportedModes")
 	if(supportedModes && !supportedModes.contains(nextMode)) log.warn "thermostat mode '$nextMode' is not supported"
 	if (nextMode in modes()) {
-		state.lastTriedMode = nextMode
-		"$nextMode"()
+		updateState("lastTriedMode", nextMode)
+		return "$nextMode"()
 	} else {
 		log.debug("no mode method '$nextMode'")
 	}
 }
+
 def getDataByName(String name) {
 	state[name] ?: device.getDataValue(name)
 }
@@ -668,54 +669,6 @@ def getModeMap() { [
 	"heat": 1,
 	"energySaveHeat": 11
 ]}
-
-def setThermostatMode(String value) {
- 	def cmds = []
-    cmds << zwave.thermostatModeV2.thermostatModeSet(mode: modeMap[value])
-    cmds << zwave.thermostatModeV2.thermostatModeGet()
-    encapSequence(cmds, standardDelay)
-}
-
-def off() {
- 	def cmds = []
-    cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 0)
-    cmds << zwave.thermostatModeV2.thermostatModeGet()
-    encapSequence(cmds, 650)
-	delayBetween([
-        sendEvent(name: "thermostatMode", value: "off"),
-        sendEvent(name: "thermostatOperatingState", value: "idle"),
-        poll()], 650)
-
-}
-
-def heat() {
- 	def cmds = []
-    cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 1)
-    cmds << zwave.thermostatModeV2.thermostatModeGet()
-    encapSequence(cmds, 650)
-    delayBetween([
-        sendEvent(name: "thermostatMode", value: "heat"),
-        sendEvent(name: "thermostatOperatingState", value: "heating"),
-        poll()], 650)
-}
-
-def energySaveHeat() {
- 	def cmds = []
-    cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 11)
-    cmds << zwave.thermostatModeV2.thermostatModeGet()
-    encapSequence(cmds, 650)
-    delayBetween([
-        sendEvent(name: "thermostatMode", value: "energySaveHeat"),
-        sendEvent(name: "thermostatOperatingState", value: "energySaveHeat"),
-        poll()], 650)
-}
-
-def auto() {
- 	def cmds = []
-    cmds << zwave.thermostatModeV2.thermostatModeSet(mode: 3)
-    cmds << zwave.thermostatModeV2.thermostatModeGet()
-    encapSequence(cmds, standardDelay)
-}
 
 private getStandardDelay() {
 	1000
